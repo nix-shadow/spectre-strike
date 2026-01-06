@@ -8,23 +8,29 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"spectre-strike/pkg/utils"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"spectre-strike/pkg/utils"
+
 	"github.com/fatih/color"
 )
 
 type AdaptiveConfig struct {
-	Target      string
-	Duration    time.Duration
-	Mode        string // "find-limit", "sustained", "spike", "ramp", "chaos"
-	MaxRate     int
-	MaxThreads  int
-	ProxyList   []string
-	UserAgents  []string
-	CustomPaths []string
+	Target         string
+	Duration       time.Duration
+	Mode           string // "find-limit", "sustained", "spike", "ramp", "chaos"
+	MaxRate        int
+	MaxThreads     int
+	ProxyList      []string
+	UserAgents     []string
+	CustomPaths    []string
+	KeepAlive      bool // Use HTTP keep-alive for more realistic load
+	HTTP2          bool // Enable HTTP/2 if supported
+	PayloadSize    int  // POST payload size in bytes
+	ConnectionPool int  // Max idle connections per host
+	AutoIncrease   bool // Auto-increase without prompts (for unattended testing)
 }
 
 type adaptiveMetrics struct {
@@ -47,6 +53,11 @@ type adaptiveMetrics struct {
 	responseTimeLock sync.Mutex
 	phase            string
 	lastAdjust       time.Time
+	connectionErrors int64 // Track connection-level errors
+	dnsErrors        int64 // DNS resolution failures
+	tlsErrors        int64 // TLS handshake failures
+	bytesReceived    int64 // Total bytes downloaded
+	bytesSent        int64 // Total bytes uploaded
 }
 
 type AttackPhase struct {
@@ -65,13 +76,16 @@ func LaunchAdaptive(config AdaptiveConfig) error {
 
 	// Set defaults
 	if config.MaxRate == 0 {
-		config.MaxRate = 1000
+		config.MaxRate = 10000 // Increased for serious load testing
 	}
 	if config.MaxThreads == 0 {
-		config.MaxThreads = 200
+		config.MaxThreads = 500 // More concurrent workers
 	}
 	if config.Mode == "" {
 		config.Mode = "find-limit"
+	}
+	if config.ConnectionPool == 0 {
+		config.ConnectionPool = 200 // Default connection pool
 	}
 
 	metrics := &adaptiveMetrics{
@@ -204,9 +218,25 @@ func adjustFindLimit(metrics *adaptiveMetrics, config AdaptiveConfig, stabilityC
 				newThreads = int32(config.MaxThreads)
 			}
 
-			atomic.StoreInt32(&metrics.currentRate, newRate)
-			atomic.StoreInt32(&metrics.currentThreads, newThreads)
-			color.Green("   ⬆️  Ramping: Rate=%d (+%d), Threads=%d", newRate, increment, newThreads)
+			color.Yellow("\n   📈 Ready to increase: Rate %d → %d (+%d), Threads %d → %d", currentRate, newRate, increment, currentThreads, newThreads)
+
+			if config.AutoIncrease {
+				// Auto-increase for unattended load testing
+				atomic.StoreInt32(&metrics.currentRate, newRate)
+				atomic.StoreInt32(&metrics.currentThreads, newThreads)
+				color.Green("   ⬆️  [AUTO] Ramping: Rate=%d (+%d), Threads=%d", newRate, increment, newThreads)
+			} else {
+				color.Cyan("   Proceed with increase? (y/n): ")
+				var response string
+				fmt.Scanln(&response)
+				if response == "y" || response == "Y" {
+					atomic.StoreInt32(&metrics.currentRate, newRate)
+					atomic.StoreInt32(&metrics.currentThreads, newThreads)
+					color.Green("   ⬆️  Ramping: Rate=%d (+%d), Threads=%d", newRate, increment, newThreads)
+				} else {
+					color.Red("   ⏸️  Holding at current rate: %d", currentRate)
+				}
+			}
 
 		} else if successRate < 70 || avgResp > 5000 || timeoutRate > 20 {
 			// Found breaking point
@@ -220,39 +250,50 @@ func adjustFindLimit(metrics *adaptiveMetrics, config AdaptiveConfig, stabilityC
 			if int(newRate) > config.MaxRate {
 				newRate = int32(config.MaxRate)
 			}
-			atomic.StoreInt32(&metrics.currentRate, newRate)
-			color.Cyan("   ↗️  Approaching limit: Rate=%d", newRate)
+
+			if config.AutoIncrease {
+				atomic.StoreInt32(&metrics.currentRate, newRate)
+				color.Cyan("   ↗️  [AUTO] Approaching limit: Rate=%d", newRate)
+			} else {
+				color.Yellow("\n   ↗️  Near limit. Increase Rate %d → %d? (y/n): ", currentRate, newRate)
+				var response string
+				fmt.Scanln(&response)
+				if response == "y" || response == "Y" {
+					atomic.StoreInt32(&metrics.currentRate, newRate)
+					color.Cyan("   ↗️  Approaching limit: Rate=%d", newRate)
+				} else {
+					color.Red("   ⏸️  Holding at current rate: %d", currentRate)
+				}
+			}
 		}
 
 	case metrics.phase == "breaking":
 		if *stabilityCount > 2 {
 			metrics.phase = "sustain"
-			// Back off slightly from breaking point
-			sustainRate := int32(float64(metrics.breakingPoint) * 0.8)
-			sustainThreads := int32(float64(currentThreads) * 0.8)
-			atomic.StoreInt32(&metrics.currentRate, sustainRate)
-			atomic.StoreInt32(&metrics.currentThreads, sustainThreads)
-			color.Yellow("   🎯 Sustaining at 80%% of breaking point: Rate=%d", sustainRate)
+			color.Yellow("   🎯 Breaking point confirmed at Rate=%d", metrics.breakingPoint)
+			color.Cyan("\n   ⚠️  Continue pushing further? (y/n): ")
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" {
+				color.Red("   ⏸️  Holding at current rate: %d", currentRate)
+			} else {
+				color.Green("   ⬆️  Continuing to push limits...")
+			}
 		} else {
-			// Decrease to recover
-			newRate := int32(float64(currentRate) * 0.7)
-			newThreads := int32(float64(currentThreads) * 0.8)
-			if newRate < 10 {
-				newRate = 10
-			}
-			if newThreads < 2 {
-				newThreads = 2
-			}
-			atomic.StoreInt32(&metrics.currentRate, newRate)
-			atomic.StoreInt32(&metrics.currentThreads, newThreads)
-			color.Red("   ⬇️  Recovering: Rate=%d, Threads=%d", newRate, newThreads)
+			// Keep at current breaking point level
+			color.Yellow("   🔄 Maintaining breaking point: Rate=%d, Threads=%d", currentRate, currentThreads)
 		}
 
 	case metrics.phase == "sustain":
+		// Maintain current rate - no decrease
+		color.Cyan("   ⚖️  Sustaining at Rate=%d (Success: %.1f%%)", currentRate, successRate)
 		if successRate < 60 {
-			newRate := int32(float64(currentRate) * 0.9)
-			atomic.StoreInt32(&metrics.currentRate, newRate)
-			color.Yellow("   ⚖️  Adjusting sustain: Rate=%d", newRate)
+			color.Yellow("\n   ⚠️  Success rate low. Continue? (y/n): ")
+			var response string
+			fmt.Scanln(&response)
+			if response != "y" && response != "Y" {
+				color.Red("   ⏸️  Holding current rate")
+			}
 		}
 	}
 
@@ -288,9 +329,13 @@ func sustainedController(metrics *adaptiveMetrics, done chan bool, config Adapti
 				currentRate := atomic.LoadInt32(&metrics.currentRate)
 
 				if successRate < 70 {
-					newRate := int32(float64(currentRate) * 0.9)
-					atomic.StoreInt32(&metrics.currentRate, newRate)
-					color.Yellow("   ⚖️  Sustain adjust: Rate=%d", newRate)
+					color.Yellow("   ⚠️  Success rate: %.1f%% at Rate=%d", successRate, currentRate)
+					color.Cyan("   Continue at this rate? (y/n): ")
+					var response string
+					fmt.Scanln(&response)
+					if response != "y" && response != "Y" {
+						color.Red("   ⏸️  Pausing attack")
+					}
 				}
 			}
 			atomic.StoreInt64(&metrics.requests, 0)
@@ -422,17 +467,20 @@ func calculatePercentiles(metrics *adaptiveMetrics) (int64, int64) {
 func launchAdaptiveThreads(parsedURL *url.URL, metrics *adaptiveMetrics, done chan bool, config AdaptiveConfig) {
 	var wg sync.WaitGroup
 
-	// Connection pool
+	// Enhanced connection pool for high-performance load testing
 	transport := &http.Transport{
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
-		MaxIdleConns:        500,
-		MaxIdleConnsPerHost: 100,
+		MaxIdleConns:        config.ConnectionPool * 2, // Scale with config
+		MaxIdleConnsPerHost: config.ConnectionPool,
+		MaxConnsPerHost:     config.ConnectionPool * 2, // Allow more concurrent connections
 		IdleConnTimeout:     90 * time.Second,
-		DisableKeepAlives:   false,
+		DisableKeepAlives:   !config.KeepAlive, // Configurable keep-alive
+		DisableCompression:  false,             // Allow compression
+		ForceAttemptHTTP2:   config.HTTP2,      // Enable HTTP/2 if requested
 	}
 
 	client := &http.Client{
-		Timeout:   15 * time.Second,
+		Timeout:   30 * time.Second, // Longer timeout for stressed servers
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -508,12 +556,29 @@ func makeEnhancedRequest(parsedURL *url.URL, metrics *adaptiveMetrics, rate int,
 		if err != nil {
 			atomic.AddInt64(&metrics.failed, 1)
 			atomic.AddInt64(&metrics.totalFailed, 1)
-			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline") {
+
+			// Detailed error tracking for bottleneck analysis
+			errStr := err.Error()
+			if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
 				atomic.AddInt64(&metrics.timeouts, 1)
+			}
+			if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "connection reset") {
+				atomic.AddInt64(&metrics.connectionErrors, 1)
+			}
+			if strings.Contains(errStr, "no such host") || strings.Contains(errStr, "DNS") {
+				atomic.AddInt64(&metrics.dnsErrors, 1)
+			}
+			if strings.Contains(errStr, "TLS") || strings.Contains(errStr, "certificate") {
+				atomic.AddInt64(&metrics.tlsErrors, 1)
 			}
 		} else {
 			atomic.AddInt64(&metrics.successful, 1)
 			atomic.AddInt64(&metrics.totalSuccessful, 1)
+
+			// Track bandwidth usage
+			if resp.ContentLength > 0 {
+				atomic.AddInt64(&metrics.bytesReceived, resp.ContentLength)
+			}
 
 			// Track status codes
 			code := fmt.Sprintf("%d", resp.StatusCode)
@@ -536,8 +601,10 @@ func makeEnhancedRequest(parsedURL *url.URL, metrics *adaptiveMetrics, rate int,
 			resp.Body.Close()
 		}
 
-		// Small random delay to avoid pattern detection
-		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+		// Minimal delay - remove for maximum throughput
+		if rand.Intn(100) < 5 { // Only 5% of requests have delay
+			time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
+		}
 	}
 }
 
@@ -599,38 +666,93 @@ func printFinalReport(metrics *adaptiveMetrics, config AdaptiveConfig) {
 	minResp := atomic.LoadInt64(&metrics.minResponse)
 	maxResp := atomic.LoadInt64(&metrics.maxResponse)
 
+	// New error metrics
+	timeouts := atomic.LoadInt64(&metrics.timeouts)
+	connErrors := atomic.LoadInt64(&metrics.connectionErrors)
+	dnsErrors := atomic.LoadInt64(&metrics.dnsErrors)
+	tlsErrors := atomic.LoadInt64(&metrics.tlsErrors)
+	bytesRx := atomic.LoadInt64(&metrics.bytesReceived)
+
 	successRate := float64(0)
 	if totalReq > 0 {
 		successRate = float64(totalSuccess) / float64(totalReq) * 100
 	}
 
+	avgRPS := float64(totalReq) / config.Duration.Seconds()
+
 	color.Cyan("\n   ╔════════════════════════════════════════════════════════════╗")
-	color.Cyan("   ║                    📋 FINAL REPORT                         ║")
+	color.Cyan("   ║              📋 LOAD TEST FINAL REPORT                     ║")
 	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 	color.White("   ║ Target: %-50s ║", config.Target)
 	color.White("   ║ Duration: %-48s ║", config.Duration)
 	color.White("   ║ Mode: %-52s ║", config.Mode)
 	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ PERFORMANCE SUMMARY                                        ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 	color.White("   ║ Total Requests:  %-40d ║", totalReq)
 	color.Green("   ║ Successful:      %-40d ║", totalSuccess)
 	color.Red("   ║ Failed:          %-40d ║", totalFail)
 	color.Yellow("   ║ Success Rate:    %-39.1f%% ║", successRate)
-	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.White("   ║ Average RPS:     %-40.0f ║", avgRPS)
 	color.White("   ║ Peak RPS:        %-40.0f ║", metrics.peakRPS)
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ CAPACITY ANALYSIS                                          ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 	if breakPoint > 0 {
 		color.Red("   ║ Breaking Point:  %-40d ║", breakPoint)
-		color.Yellow("   ║ Safe Capacity:   ~%-38d ║", int(float64(breakPoint)*0.7))
+		color.Yellow("   ║ Recommended Max: %-40d ║", int(float64(breakPoint)*0.7))
+		color.Green("   ║ Safe Capacity:   %-40d ║", int(float64(breakPoint)*0.6))
+	} else {
+		color.Green("   ║ No breaking point reached - server handled all load!      ║")
 	}
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ RESPONSE TIMES                                             ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 	color.White("   ║ Min Response:    %-39dms ║", minResp)
+	color.White("   ║ Avg Response:    %-39dms ║", atomic.LoadInt64(&metrics.avgResponse))
 	color.White("   ║ Max Response:    %-39dms ║", maxResp)
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ ERROR BREAKDOWN                                            ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.White("   ║ Timeouts:        %-40d ║", timeouts)
+	color.White("   ║ Connection Errors: %-38d ║", connErrors)
+	color.White("   ║ DNS Errors:      %-40d ║", dnsErrors)
+	color.White("   ║ TLS Errors:      %-40d ║", tlsErrors)
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ BANDWIDTH                                                  ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.White("   ║ Data Received:   %-37.2f MB ║", float64(bytesRx)/(1024*1024))
+	color.White("   ║ Avg per Request: %-37.2f KB ║", float64(bytesRx)/(1024*float64(totalSuccess)))
 	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 
 	// Status code distribution
-	color.Cyan("   ║ Status Code Distribution:                                  ║")
+	color.Cyan("   ║ HTTP STATUS CODE DISTRIBUTION                              ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
 	metrics.statusCodes.Range(func(key, value interface{}) bool {
-		color.White("   ║   %s: %-51d ║", key, value)
+		color.White("   ║   HTTP %s: %-48d ║", key, value)
 		return true
 	})
+
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+	color.Cyan("   ║ RECOMMENDATIONS                                            ║")
+	color.Cyan("   ╠════════════════════════════════════════════════════════════╣")
+
+	if successRate > 95 {
+		color.Green("   ║ ✅ Excellent! Server handled load very well.              ║")
+	} else if successRate > 85 {
+		color.Yellow("   ║ ⚠️  Good, but consider optimization for better stability. ║")
+	} else if successRate > 70 {
+		color.Red("   ║ ⚠️  Server struggled. Optimization or scaling needed.     ║")
+	} else {
+		color.Red("   ║ ❌ Critical: Server failed under load. Immediate action!  ║")
+	}
+
+	if connErrors > totalReq/10 {
+		color.Red("   ║ ⚠️  High connection errors - check server config/limits   ║")
+	}
+	if timeouts > totalReq/10 {
+		color.Red("   ║ ⚠️  High timeout rate - server too slow or overloaded     ║")
+	}
 
 	color.Cyan("   ╚════════════════════════════════════════════════════════════╝\n")
 }
