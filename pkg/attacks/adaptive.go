@@ -12,9 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 	"spectre-strike/pkg/utils"
-
 	"github.com/fatih/color"
 )
 
