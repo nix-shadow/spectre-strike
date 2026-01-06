@@ -1,0 +1,43 @@
+{
+  "general": {
+    "log_level": "info",
+    "output_dir": "./reports",
+    "report_format": "both",
+    "verbose": false
+  },
+  "attack": {
+    "default_duration": 60,
+    "default_threads": 20,
+    "default_rps": 200,
+    "use_intelligence": true,
+    "auto_adapt": true,
+    "vectors": ["adaptive", "http2", "post"],
+    "max_retries": 3
+  },
+  "proxy": {
+    "enabled": false,
+    "proxy_file": "proxies.txt",
+    "rotation_mode": "random",
+    "health_check": true,
+    "health_check_url": "https://httpbin.org/ip",
+    "max_failures": 5,
+    "rotate_interval": 30
+  },
+  "advanced": {
+    "waf_bypass": true,
+    "tls_fingerprinting": true,
+    "anti_bot": true,
+    "header_randomization": true,
+    "evasion_strategy": "balanced",
+    "custom_headers": [],
+    "payload_templates": [],
+    "dns_resolution": "system",
+    "custom_dns": ["8.8.8.8", "1.1.1.1"]
+  },
+  "api": {
+    "enabled": false,
+    "port": 8080,
+    "api_key": "",
+    "cors": true
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "general": {
+    "log_level": "debug",
+    "output_dir": "./reports",
+    "report_format": "both",
+    "verbose": true
+  },
+  "attack": {
+    "default_duration": 180,
+    "default_threads": 100,
+    "default_rps": 1000,
+    "use_intelligence": true,
+    "auto_adapt": true,
+    "vectors": ["adaptive", "http2", "post", "slowloris", "websocket"],
+    "max_retries": 5
+  },
+  "proxy": {
+    "enabled": true,
+    "proxy_file": "proxies.txt",
+    "rotation_mode": "round-robin",
+    "health_check": true,
+    "health_check_url": "https://httpbin.org/ip",
+    "max_failures": 10,
+    "rotate_interval": 15
+  },
+  "advanced": {
+    "waf_bypass": true,
+    "tls_fingerprinting": true,
+    "anti_bot": true,
+    "header_randomization": true,
+    "evasion_strategy": "aggressive",
+    "custom_headers": [],
+    "payload_templates": [],
+    "dns_resolution": "custom",
+    "custom_dns": ["8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"]
+  },
+  "api": {
+    "enabled": true,
+    "port": 8080,
+    "api_key": "aggressive-mode-key",
+    "cors": true
+  },
+  "exploitation": {
+    "auto_exploit": true,
+    "verification": true,
+    "safe_mode": false,
+    "payload_encoding": "none",
+    "retry_on_fail": 5
+  },
+  "vulnerability_scan": {
+    "scan_depth": "deep",
+    "scan_ports": [21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 443, 445, 993, 995, 1433, 1521, 3306, 3389, 5432, 5900, 8000, 8080, 8443, 8888, 9090],
+    "service_detection": true,
+    "version_detection": true,
+    "os_fingerprinting": true,
+    "aggressive_scan": true
+  },
+  "web_security": {
+    "sql_injection_scan": true,
+    "xss_scan": true,
+    "lfi_rfi_scan": true,
+    "directory_traversal": true,
+    "command_injection": true,
+    "xxe_scan": true,
+    "ssrf_scan": true,
+    "authentication_bypass": true,
+    "session_hijacking": true
+  },
+  "network": {
+    "arp_poisoning": false,
+    "dns_spoofing": false,
+    "mitm_attack": false,
+    "packet_sniffing": true,
+    "traffic_analysis": true
+  }
+}

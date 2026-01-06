@@ -1,0 +1,84 @@
+{
+  "general": {
+    "log_level": "info",
+    "output_dir": "./reports",
+    "report_format": "both",
+    "verbose": false
+  },
+  "attack": {
+    "default_duration": 60,
+    "default_threads": 20,
+    "default_rps": 200,
+    "use_intelligence": true,
+    "auto_adapt": true,
+    "vectors": ["adaptive", "http2", "post"],
+    "max_retries": 3
+  },
+  "proxy": {
+    "enabled": false,
+    "proxy_file": "proxies.txt",
+    "rotation_mode": "random",
+    "health_check": true,
+    "health_check_url": "https://httpbin.org/ip",
+    "max_failures": 5,
+    "rotate_interval": 30
+  },
+  "advanced": {
+    "waf_bypass": true,
+    "tls_fingerprinting": true,
+    "anti_bot": true,
+    "header_randomization": true,
+    "evasion_strategy": "balanced",
+    "custom_headers": [],
+    "payload_templates": [],
+    "dns_resolution": "system",
+    "custom_dns": ["8.8.8.8", "1.1.1.1"]
+  },
+  "api": {
+    "enabled": false,
+    "port": 8080,
+    "api_key": "",
+    "cors": true
+  },
+  "exploitation": {
+    "auto_exploit": false,
+    "verification": true,
+    "safe_mode": true,
+    "payload_encoding": "base64",
+    "retry_on_fail": 3
+  },
+  "vulnerability_scan": {
+    "scan_depth": "medium",
+    "scan_ports": [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 8080, 8443],
+    "service_detection": true,
+    "version_detection": true,
+    "os_fingerprinting": true,
+    "aggressive_scan": false
+  },
+  "web_security": {
+    "sql_injection_scan": true,
+    "xss_scan": true,
+    "lfi_rfi_scan": true,
+    "directory_traversal": true,
+    "command_injection": true,
+    "xxe_scan": true,
+    "ssrf_scan": true,
+    "authentication_bypass": true,
+    "session_hijacking": false
+  },
+  "network": {
+    "arp_poisoning": false,
+    "dns_spoofing": false,
+    "mitm_attack": false,
+    "packet_sniffing": false,
+    "traffic_analysis": true
+  },
+  "password": {
+    "wordlist_path": "./wordlists/",
+    "default_wordlist": "rockyou.txt",
+    "custom_rules": [],
+    "max_attempts": 1000,
+    "delay_between_attempts": 100,
+    "hash_cracking": true
+  }
+}

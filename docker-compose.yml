@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  spectre-strike:
+    build: .
+    image: advanced-spectre-strike:latest
+    container_name: spectre-strike
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./results:/app/results
+      - ./configs:/app/configs
+      - ./wordlists:/app/wordlists
+    networks:
+      - attack-net
+    environment:
+      - TZ=UTC
+
+  attack-api:
+    build: .
+    image: advanced-spectre-strike:latest
+    container_name: attack-api
+    command: ["./attack", "api", "-port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./results:/app/results
+      - ./configs:/app/configs
+    networks:
+      - attack-net
+    restart: unless-stopped
+
+networks:
+  attack-net:
+    driver: bridge

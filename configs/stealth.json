@@ -1,0 +1,69 @@
+{
+  "general": {
+    "log_level": "error",
+    "output_dir": "/dev/shm/reports",
+    "report_format": "json",
+    "verbose": false
+  },
+  "attack": {
+    "default_duration": 300,
+    "default_threads": 5,
+    "default_rps": 20,
+    "use_intelligence": true,
+    "auto_adapt": true,
+    "vectors": ["adaptive"],
+    "max_retries": 2
+  },
+  "proxy": {
+    "enabled": true,
+    "proxy_file": "proxies.txt",
+    "rotation_mode": "random",
+    "health_check": true,
+    "health_check_url": "https://httpbin.org/ip",
+    "max_failures": 3,
+    "rotate_interval": 60
+  },
+  "advanced": {
+    "waf_bypass": true,
+    "tls_fingerprinting": true,
+    "anti_bot": true,
+    "header_randomization": true,
+    "evasion_strategy": "stealth",
+    "custom_headers": [],
+    "payload_templates": [],
+    "dns_resolution": "doh",
+    "custom_dns": ["1.1.1.1", "8.8.8.8"]
+  },
+  "api": {
+    "enabled": false,
+    "port": 8080,
+    "api_key": "",
+    "cors": false
+  },
+  "exploitation": {
+    "auto_exploit": false,
+    "verification": true,
+    "safe_mode": true,
+    "payload_encoding": "base64",
+    "retry_on_fail": 2
+  },
+  "vulnerability_scan": {
+    "scan_depth": "light",
+    "scan_ports": [80, 443, 8080, 8443],
+    "service_detection": true,
+    "version_detection": false,
+    "os_fingerprinting": false,
+    "aggressive_scan": false
+  },
+  "web_security": {
+    "sql_injection_scan": true,
+    "xss_scan": true,
+    "lfi_rfi_scan": true,
+    "directory_traversal": true,
+    "command_injection": true,
+    "xxe_scan": false,
+    "ssrf_scan": false,
+    "authentication_bypass": false,
+    "session_hijacking": false
+  }
+}
