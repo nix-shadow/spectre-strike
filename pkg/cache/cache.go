@@ -4,6 +4,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,10 +12,12 @@ import (
 )
 
 type Cache struct {
-	store    map[string]*CacheEntry
-	mu       sync.RWMutex
-	ttl      time.Duration
-	filePath string
+	store       map[string]*CacheEntry
+	mu          sync.RWMutex
+	ttl         time.Duration
+	filePath    string
+	stopCleanup chan struct{}
+	stopOnce    sync.Once
 }
 
 type CacheEntry struct {
@@ -26,9 +29,10 @@ type CacheEntry struct {
 
 func New(ttl time.Duration, filePath string) *Cache {
 	c := &Cache{
-		store:    make(map[string]*CacheEntry),
-		ttl:      ttl,
-		filePath: filePath,
+		store:       make(map[string]*CacheEntry),
+		ttl:         ttl,
+		filePath:    filePath,
+		stopCleanup: make(chan struct{}),
 	}
 	c.load()
 	return c
@@ -36,46 +40,86 @@ func New(ttl time.Duration, filePath string) *Cache {
 
 func (c *Cache) Set(key string, value interface{}) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.store[key] = &CacheEntry{
 		Key:       key,
 		Value:     value,
 		ExpiresAt: time.Now().Add(c.ttl),
 		CreatedAt: time.Now(),
 	}
-	c.persist()
+	// Snapshot entries to persist outside lock
+	entries := make([]*CacheEntry, 0, len(c.store))
+	for _, entry := range c.store {
+		entries = append(entries, entry)
+	}
+	c.mu.Unlock()
+
+	if c.filePath != "" {
+		if err := c.persistToFile(entries); err != nil {
+			log.Printf("cache: persist failed on Set: %v", err)
+		}
+	}
 }
 
 func (c *Cache) Get(key string) (interface{}, bool) {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	entry, exists := c.store[key]
 	if !exists {
+		c.mu.RUnlock()
 		return nil, false
 	}
 
+	// Check expiry
 	if time.Now().After(entry.ExpiresAt) {
+		c.mu.RUnlock()
+		// Acquire write lock to delete expired entry
+		c.mu.Lock()
 		delete(c.store, key)
+		// prepare entries for persistence outside the lock
+		entries := make([]*CacheEntry, 0, len(c.store))
+		for _, e := range c.store {
+			entries = append(entries, e)
+		}
+		c.mu.Unlock()
+		// Persist changes (best-effort)
+		if c.filePath != "" {
+			if err := c.persistToFile(entries); err != nil {
+				log.Printf("cache: failed to persist after expiry deletion: %v", err)
+			}
+		}
 		return nil, false
 	}
 
-	return entry.Value, true
+	value := entry.Value
+	c.mu.RUnlock()
+	return value, true
 }
 
 func (c *Cache) Delete(key string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	delete(c.store, key)
-	c.persist()
+	entries := make([]*CacheEntry, 0, len(c.store))
+	for _, entry := range c.store {
+		entries = append(entries, entry)
+	}
+	c.mu.Unlock()
+
+	if c.filePath != "" {
+		if err := c.persistToFile(entries); err != nil {
+			log.Printf("cache: persist failed on Delete: %v", err)
+		}
+	}
 }
 
 func (c *Cache) Clear() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.store = make(map[string]*CacheEntry)
-	c.persist()
+	c.mu.Unlock()
+
+	if c.filePath != "" {
+		if err := c.persistToFile([]*CacheEntry{}); err != nil {
+			log.Printf("cache: persist failed on Clear: %v", err)
+		}
+	}
 }
 
 func (c *Cache) Hash(data string) string {
@@ -85,12 +129,21 @@ func (c *Cache) Hash(data string) string {
 
 func (c *Cache) cleanup() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	now := time.Now()
 	for key, entry := range c.store {
 		if now.After(entry.ExpiresAt) {
 			delete(c.store, key)
+		}
+	}
+	entries := make([]*CacheEntry, 0, len(c.store))
+	for _, e := range c.store {
+		entries = append(entries, e)
+	}
+	c.mu.Unlock()
+
+	if c.filePath != "" {
+		if err := c.persistToFile(entries); err != nil {
+			log.Printf("cache: persist failed during cleanup: %v", err)
 		}
 	}
 }
@@ -121,31 +174,49 @@ func (c *Cache) load() {
 	}
 }
 
-func (c *Cache) persist() {
+// persistToFile writes entries atomically to the configured file path.
+func (c *Cache) persistToFile(entries []*CacheEntry) error {
 	if c.filePath == "" {
-		return
-	}
-
-	entries := make([]*CacheEntry, 0, len(c.store))
-	for _, entry := range c.store {
-		entries = append(entries, entry)
+		return nil
 	}
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 
 	dir := filepath.Dir(c.filePath)
-	os.MkdirAll(dir, 0755)
-	os.WriteFile(c.filePath, data, 0644)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	tmp := c.filePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	// Rename is atomic on most platforms
+	if err := os.Rename(tmp, c.filePath); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Cache) StartCleanup(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
-		for range ticker.C {
-			c.cleanup()
+		for {
+			select {
+			case <-ticker.C:
+				c.cleanup()
+			case <-c.stopCleanup:
+				ticker.Stop()
+				return
+			}
 		}
 	}()
+}
+
+// StopCleanup stops the background cleanup ticker. Safe to call multiple times.
+func (c *Cache) StopCleanup() {
+	c.stopOnce.Do(func() { close(c.stopCleanup) })
 }
